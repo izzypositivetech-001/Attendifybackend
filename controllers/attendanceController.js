@@ -1,12 +1,8 @@
-import { parse } from "dotenv";
 import Attendance from "../models/Attendance.js";
 import Employee from "../models/Employee.js";
-import { check, validationResult } from "express-validator";
+import { validationResult } from "express-validator";
 import mongoose from "mongoose";
 
-// @route POST /api/attendance
-// @desc mark attendance for an employee
-// @access Private
 export const markAttendance = async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -18,7 +14,7 @@ export const markAttendance = async (req, res) => {
 
     const employee = await Employee.findById(employeeId);
     if (!employee) {
-      return res.status(404).json({ message: "Employee not found" }); // Fixed: Added proper response
+      return res.status(404).json({ message: "Employee not found" });
     }
 
     const today = new Date();
@@ -38,6 +34,11 @@ export const markAttendance = async (req, res) => {
         const checkIn = new Date(attendance.checkInTime);
         const checkOut = new Date(attendance.checkOutTime);
         const diffMs = checkOut - checkIn;
+        
+        if (diffMs < 0) {
+          return res.status(400).json({ message: "Invalid check-out time" });
+        }
+
         const diffHrs = diffMs / (1000 * 60 * 60);
         attendance.workHours = parseFloat(diffHrs.toFixed(2));
 
@@ -53,10 +54,9 @@ export const markAttendance = async (req, res) => {
       return res.status(400).json({ message: "Already checked out for today" });
     }
 
-    // Create new attendance record
     attendance = new Attendance({
       employee: employeeId,
-      date: today, // Added missing date field
+      date: today,
       checkInTime: new Date(),
       status: status || "Present",
       note: note || "",
@@ -66,17 +66,13 @@ export const markAttendance = async (req, res) => {
     res.json({ success: true, message: "Checked in successfully", attendance });
   } catch (error) {
     console.error(error.message);
-    res.status(500).send("Server error");
+    res.status(500).json({ message: "Server Error" });
   }
 };
 
-// @route GET /api/attendance/:id
-// @desc Get single attendance record
-// @access Private
 export const getAttendanceById = async (req, res) => {
   try {
-    const attendance = await Attendance.findById(req.params.id)
-      .populate('employee');
+    const attendance = await Attendance.findById(req.params.id).populate('employee');
     
     if (!attendance) {
       return res.status(404).json({ message: 'Attendance record not found' });
@@ -88,23 +84,22 @@ export const getAttendanceById = async (req, res) => {
     });
   } catch (error) {
     console.error(error.message);
-    res.status(500).send('Server Error');
+    res.status(500).json({ message: 'Server Error' });
   }
 };
 
-// @route GET /api/attendance
-// @desc Get all attendance records
-// @access Private
 export const getAttendance = async (req, res) => {
   try {
-    const { employeeId, startDate, endDate, status, department, page = 1, limit = 10 } = req.query;
+    const { employeeId, startDate, endDate, status, department } = req.query;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
 
     const query = {};
-    if (employeeId) query.employee = new mongoose.Types.ObjectId(employeeId); // Fixed: Use proper ObjectId
+    if (employeeId) query.employee = new mongoose.Types.ObjectId(employeeId);
     if (startDate && endDate) {
       query.checkInTime = {
         $gte: new Date(startDate),
-        $lt: new Date(new Date(endDate).getTime() + 24 * 60 * 60 * 1000), // Include full end date
+        $lt: new Date(new Date(endDate).getTime() + 24 * 60 * 60 * 1000),
       };
     }
     if (status) query.status = status;
@@ -135,8 +130,8 @@ export const getAttendance = async (req, res) => {
     const attendanceRecords = await Attendance.aggregate([
       ...pipeline,
       { $sort: { checkInTime: -1 } },
-      { $skip: (page - 1) * parseInt(limit) },
-      { $limit: parseInt(limit) },
+      { $skip: (page - 1) * limit },
+      { $limit: limit },
       {
         $project: {
           _id: 1,
@@ -157,19 +152,16 @@ export const getAttendance = async (req, res) => {
     res.json({
       success: true,
       count: totalCount,
-      totalPages: Math.ceil(totalCount / parseInt(limit)),
-      currentPage: parseInt(page),
+      totalPages: Math.ceil(totalCount / limit),
+      currentPage: page,
       records: attendanceRecords,
     });
   } catch (error) {
     console.error(error.message);
-    res.status(500).send("Server error");
+    res.status(500).json({ message: "Server Error" });
   }
 };
 
-// @route GET /api/attendance/stats
-// @desc Get attendance statistics
-// @access Private
 export const getAttendanceStats = async (req, res) => {
   try {
     const { startDate, endDate, department } = req.query;
@@ -207,42 +199,17 @@ export const getAttendanceStats = async (req, res) => {
       });
     }
 
-    const statusStats = await Attendance.aggregate([
-      ...pipeline,
-      {
-        $group: {
-          _id: "$status",
-          count: { $sum: 1 },
-        },
-      },
+    const [statusStats, dailyStats, departmentStats] = await Promise.all([
+      Attendance.aggregate([...pipeline, { $group: { _id: "$status", count: { $sum: 1 } } }]),
+      Attendance.aggregate([
+        ...pipeline,
+        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$checkInTime" } }, count: { $sum: 1 } } },
+        { $sort: { _id: 1 } },
+      ]),
+      Attendance.aggregate([...pipeline, { $group: { _id: "$employeeDetails.department", count: { $sum: 1 } } }]),
     ]);
 
-    const dailyStats = await Attendance.aggregate([
-      ...pipeline,
-      {
-        $group: {
-          _id: {
-            $dateToString: { format: "%Y-%m-%d", date: "$checkInTime" },
-          },
-          count: { $sum: 1 },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
-
-    const departmentStats = await Attendance.aggregate([
-      ...pipeline,
-      {
-        $group: {
-          _id: "$employeeDetails.department",
-          count: { $sum: 1 },
-        },
-      },
-    ]);
-
-    const totalEmployees = await Employee.countDocuments(
-      department ? { department } : {}
-    );
+    const totalEmployees = await Employee.countDocuments(department ? { department } : {});
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -263,13 +230,10 @@ export const getAttendanceStats = async (req, res) => {
     });
   } catch (error) {
     console.error(error.message);
-    res.status(500).send("Server error");
+    res.status(500).json({ message: "Server Error" });
   }
 };
 
-// @route PUT /api/attendance/:id
-// @desc Update attendance record
-// @access Private
 export const updateAttendance = async (req, res) => {
   try {
     const { status, checkInTime, checkOutTime, note } = req.body;
@@ -288,6 +252,11 @@ export const updateAttendance = async (req, res) => {
       const checkIn = new Date(attendance.checkInTime);
       const checkOut = new Date(attendance.checkOutTime);
       const diffMs = checkOut - checkIn;
+      
+      if (diffMs < 0) {
+        return res.status(400).json({ message: "Invalid check-out time" });
+      }
+
       const diffHrs = diffMs / (1000 * 60 * 60);
       attendance.workHours = parseFloat(diffHrs.toFixed(2));
     }
@@ -300,16 +269,13 @@ export const updateAttendance = async (req, res) => {
     });
   } catch (error) {
     console.error(error.message);
-    res.status(500).send("Server error");
+    res.status(500).json({ message: "Server Error" });
   }
 };
 
-// @route DELETE /api/attendance/:id
-// @desc Delete attendance record
-// @access Private
 export const deleteAttendance = async (req, res) => {
   try {
-    const attendance = await Attendance.findByIdAndDelete(req.params.id); // Fixed: Use findByIdAndDelete
+    const attendance = await Attendance.findByIdAndDelete(req.params.id);
     if (!attendance) {
       return res.status(404).json({ message: "Attendance record not found" });
     }
@@ -317,16 +283,6 @@ export const deleteAttendance = async (req, res) => {
     res.json({ success: true, message: "Attendance record deleted successfully" });
   } catch (error) {
     console.error(error.message);
-    res.status(500).send("Server error");
+    res.status(500).json({ message: "Server Error" });
   }
-};
-
-// Export all controller functions
-export default {
-  markAttendance,
-  getAttendance,
-  getAttendanceStats,
-  getAttendanceById,
-  updateAttendance,
-  deleteAttendance,
 };

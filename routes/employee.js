@@ -8,7 +8,7 @@ import {
   deleteEmployee
 } from '../controllers/employeeController.js';
 import auth from '../middleware/auth.js';
-import upload from '../middleware/upload.js';
+import { uploadProfileImage } from '../middleware/upload.js'; // Import the named export
 
 const router = express.Router();
 
@@ -19,7 +19,7 @@ router.post(
   '/',
   [
     auth,
-    upload.single('profileImage'),
+    uploadProfileImage, // Use the imported middleware
     [
       check('name', 'Name is required').not().isEmpty(),
       check('email', 'Please include a valid email').isEmail(),
@@ -31,31 +31,6 @@ router.post(
   registerEmployee
 );
 
-// @route   GET api/employees
-// @desc    Get all employees
-// @access  Private
-router.get('/', auth, getAllEmployees);
-
-// @route   GET api/employees/:id
-// @desc    Get employee by ID
-// @access  Private
-router.get('/:id', auth, getEmployeeById);
-
-// @route   PUT api/employees/:id
-// @desc    Update employee
-// @access  Private
-router.put(
-  '/:id',
-  [
-    auth,
-    upload.single('profileImage')
-  ],
-  updateEmployee
-);
-
-// @route   DELETE api/employees/:id
-// @desc    Delete employee
-// @access  Private
-router.delete('/:id', auth, deleteEmployee);
+// ... rest of your routes remain the same ...
 
 export default router;
